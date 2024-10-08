@@ -1,0 +1,488 @@
+---
+title: "staltcheck"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+```{r}
+
+library(tidyverse)
+library(metafor)
+library(janitor)
+library(statcheck)
+library(knitr)
+library(kableExtra)
+
+# min_decimals <- function(x, digits = 2) {
+#   sprintf(paste0("%.", digits, "f"), x)
+# }
+
+```
+
+# Statcheck
+
+```{r}
+
+# # results to be statchecked
+# results_for_statcheck <- 
+#   tibble(label = c("t test comparing mean age between groups"),
+#          printed_result = c("t(58) = 1.46, p = 0.03"))
+# 
+# # apply statcheck
+# statcheck(results_for_statcheck, messages = FALSE) |>
+#   select(raw, computed_p, error, decision_error) |>
+#   # print table
+#   kable() |>
+#   kableExtra::kable_classic(full_width = FALSE)
+
+```
+
+
+# statcheck simple
+
+```{r}
+
+
+# dat <- read_csv("statchecksimple.csv")
+# 
+# ggplot(dat, aes(computed_p)) +
+#   geom_histogram()
+# 
+# ggplot(dat, aes(log(computed_p) * -1)) +
+#   geom_histogram() +
+#   xlab("Number of zeros in the p value\n(log(p) * -1))")
+
+
+```
+
+# refactors statcheck simple edition code
+
+```{r}
+
+library(dplyr)
+library(stringr)
+library(statcheck)
+
+CLOSE_RANGE = 0.01 # proportion proximity of computed vs reported p-values to still be considered "close"
+
+# Function to preprocess text and make it more statcheck-friendly
+preprocess_text <- function(text) {
+  # The edge of paragraph can cause issues
+  text <- paste("", text, "")
+  
+  # Replace weird spaces
+  text <- text %>%
+    str_replace_all(fixed(" "), " ") %>%  # half spaces
+    str_replace_all("\\s", " ") # normalize spaces
+  
+  # Replace non-standard separators
+  text <- text %>%
+    str_replace_all(fixed(";"), fixed(",")) %>%
+    str_replace_all(fixed("["), fixed("(")) %>%
+    str_replace_all(fixed("]"), fixed(")"))
+  
+  # Replace squared symbol
+  text <- text %>% str_replace_all(fixed("\u00B2"), fixed("2"))
+  
+  # Statcheck has trouble with test_values or p-values that are exactly 0 or 1
+  text <- text %>%
+    str_replace_all("=\\s?0(?!(\\d|(\\.\\d)))", fixed("= 0.0")) %>%
+    str_replace_all("<\\s?0(?!(\\d|(\\.\\d)))", fixed("< 0.0")) %>%
+    str_replace_all(">\\s?0(?!(\\d|(\\.\\d)))", fixed("> 0.0")) %>%
+    str_replace_all("=\\s?1(?!(\\d|(\\.\\d)))", fixed("= 1.0")) %>%
+    str_replace_all("<\\s?1(?!(\\d|(\\.\\d)))", fixed("< 1.0")) %>%
+    str_replace_all(">\\s?1(?!(\\d|(\\.\\d)))", fixed("> 1.0"))
+  
+  # Recognize t-tests without parentheses
+  REGEX_NUMBER <- "[0-9]*\\.?[0-9]+" # positive number with optional decimal
+  REGEX_T <- paste0("[^A-Za-z](t|T)", REGEX_NUMBER, "\\s*=")
+  REGEX_F <- paste0("[^A-Za-z](f|F)", REGEX_NUMBER, ",", REGEX_NUMBER, "\\s*=")
+  
+  # Add parentheses to smooshed t-tests
+  text <- text %>%
+    str_replace_all(REGEX_T, function(s) {
+      degrees_of_freedom <- str_extract(s, REGEX_NUMBER)
+      paste0(" t(", degrees_of_freedom, ")=")
+    })
+  
+  # Add parentheses to smooshed f-tests
+  text <- text %>%
+    str_replace_all(REGEX_F, function(s) {
+      degrees_of_freedom <- str_extract_all(s, REGEX_NUMBER)[[1]]
+      paste0(" f(", degrees_of_freedom[[1]], ",", degrees_of_freedom[[2]], ")=")
+    })
+  
+  return(text)
+}
+
+# Function to process text, apply statcheck, and return results
+process_stat_results <- function(input_text, statcheck_fix = TRUE, check_small_errors = TRUE, check_one_tailed = TRUE) {
+  # Optionally preprocess the input text
+  if (statcheck_fix) {
+    input_text <- preprocess_text(input_text)
+  }
+  
+  # Apply statcheck
+  result_table <- statcheck(input_text) 
+
+  if(is.data.frame(result_table)){
+    result_table <- result_table|>
+      mutate(reported_p = as.numeric(reported_p),
+             computed_p = as.numeric(computed_p))
+  }
+  
+  # Clean up columns if statcheck found any results
+  if (!is.null(result_table)) {
+    result_table <- result_table %>%
+      mutate(p_is_close = (abs(reported_p - computed_p) / (reported_p / 2 + computed_p / 2) < CLOSE_RANGE)) %>%
+      mutate(p_is_close = p_is_close | abs(reported_p - computed_p) < 0.0001) %>%
+      mutate(p_is_close = p_is_close & check_small_errors)
+    
+    # Clean up and format output
+    result_table <- result_table %>%
+      mutate(df1 = ifelse(is.na(df1), "-", df1),
+             df2 = ifelse(is.na(df2), "-", df2)) %>%
+      rowwise() %>%
+      mutate(df1 = format(df1, digits = 3, drop0trailing = TRUE),
+             df2 = format(df2, digits = 3, drop0trailing = TRUE),
+             reported_p_string = format(reported_p, digits = 2, nsmall = 3, drop0trailing = TRUE),
+             computed_p_string = format(computed_p, digits = 2, nsmall = 3, drop0trailing = TRUE)) %>%
+      ungroup()
+    
+    # # Return only relevant columns
+    # result_table <- result_table %>%
+    #   select(test_value, df1, df2, Value, reported_p, computed_p, p_is_close)
+  }
+  
+  return(result_table)
+}
+
+```
+
+## Test
+
+```{r}
+
+# Example of how to use this function on a local text string:
+text_example <- "Here is some text with test_valueal tests t(123)=.45, p=0.65. Sometimes, the reported test_values are so inconsistent, they lead to decision errors F(12,34)=0.56, p=0.048."
+
+
+text_example <- "exp 1
+iat
+t(98.12) = 6.63, p < .001
+sr
+t(98.32) = 8.33, p < .001
+
+exp 2
+iat
+t(100.85) = -1.18, p = .24
+sr
+t(100.98) = -1.09, p = .28
+
+exp 3
+iat
+t(93.42) = 3.29, p = .001
+sr
+t(92.94) = 5.52, p < .001
+
+exp 4
+iat
+t(184.00) = 5.02, p < .001
+sr
+t(179.27) = 8.51, p < .001
+
+Exp 5
+Iat
+t(168.75) = 3.79, p < .001
+sr
+t(169.77) = 7.66, p < .001
+
+exp 6
+iat
+t(227.66) = 7.25, p < .001
+sr
+t(227.44) = 12.08, p < .001
+
+exp 7
+priming
+t(492) = 2.89, p = .004
+sr
+t(479.98) = 12.72, p < .001
+
+exp 8 
+iat
+F(2, 219) = 28.26, p < .0001
+sr
+F(2, 219) = 26.70, p < .0001
+"
+
+results <- process_stat_results(text_example)
+print(results)
+
+results |>
+  mutate(n_decimals = log(computed_p) * -1)
+
+results |>
+  mutate(n_decimals = log(computed_p) * -1) |>
+  ggplot(aes(n_decimals)) +
+  geom_histogram() +
+  xlab("Number of decimals in the p value\n(log(p) * -1))")
+
+```
+
+## APA dataset
+
+```{r}
+
+# library(furrr)
+# 
+# # set up parallel processing
+# future::plan(multisession)
+# 
+# # dat <- read_rds("../data/data_fulltexts.rds") |>
+# #   mutate(text = str_remove_all(text, "\n"))
+# # 
+# # write_rds(dat, "../data/data_fulltexts_no_newlines.rds", compress = "gz")
+# 
+# dat <- read_rds("../data/data_fulltexts_no_newlines.rds")
+# 
+# possible_process_stat_results <- possibly(process_stat_results, otherwise = NA)
+
+```
+
+
+```{r}
+
+# start_time <- Sys.time()
+# 
+# statcheck_on_apa_dataset <- dat |>
+#   #slice(1:10000) |>
+#   mutate(results = future_map(text, possible_process_stat_results)) |>
+#   select(-text) |>
+#   unnest(results) |>
+#   full_join(dat |> select(doi), by = "doi")
+# 
+# end_time <- Sys.time()
+# time_taken <- round(end_time - start_time, 2)
+# time_taken
+# 
+# write_rds(statcheck_on_apa_dataset, "../data/statcheck_on_apa_dataset.rds")
+statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset.rds")
+
+```
+
+## statcheck errors
+
+```{r}
+
+statcheck_on_apa_dataset |>
+  distinct(doi) |>
+  count()
+
+statcheck_on_apa_dataset |>
+  drop_na(decision_error) |>
+  distinct(doi) |>
+  count()
+
+statcheck_on_apa_dataset |>
+  drop_na(decision_error) |>
+  group_by(doi) |>
+  summarize(decision_error = max(decision_error, na.rm = TRUE)) |>
+  ungroup() |>
+  count(decision_error) |>
+  mutate(percent = janitor::round_half_up(n / sum(n)*100, 1))
+
+# temp <- statcheck_on_apa_dataset |>
+#   drop_na(decision_error) |>
+#   group_by(doi) |>
+#   summarize(n_tests = n(),
+#             decision_errors = sum(decision_error)) |>
+#   ungroup()
+
+```
+
+- n articles: 74470
+- n articles with statcheck-able results detected: 26769
+- n articles with 1+ statcheck decision errors: 3446, 12.9% (broadly replicates Nuijten et al.'s result)
+
+## staltcheck errors
+
+is_lower <- function(value, threshold = 0.0000000000000001){
+  tolerance <- threshold * -1
+  (value - threshold) < -tolerance
+}
+
+```{r fig.height=4, fig.width=10}
+
+staltcheck_on_apa_database <- statcheck_on_apa_dataset |> 
+  filter(!is.na(computed_p)) |>
+  mutate(z_score = qnorm(log(computed_p / 2), lower.tail = FALSE, log.p = TRUE))
+
+ggplot(staltcheck_on_apa_database, aes(z_score)) +
+  geom_histogram(boundary = 0, binwidth = 0.25) +
+  scale_x_continuous(breaks = c(0, 1.96, 2.58, 3.29, 3.89, 10, 20, 30, 40),
+                     labels = c("(p = 1) 0", "(p < .05) 1.96", "(p < .01) 2.58", "(p < .001) 3.29", "(p < .0001) 3.89", "(p ~ 10e-23) 10", "(p ~ 10e-88) 20", "(p ~ 10e-197) 30", "(p ~ 10e-351) 40")) +
+  geom_vline(xintercept = 1.960, linetype = "dotted") + # p < .05
+  geom_vline(xintercept = 2.576, linetype = "dotted") + # p < .01
+  geom_vline(xintercept = 3.291, linetype = "dotted") + # p < .001
+  geom_vline(xintercept = 3.891, linetype = "dotted") + # p < .0001
+  theme_linedraw() +
+  ylab("Frequency") +
+  xlab("Z score") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+
+```{r}
+
+ggplot(staltcheck_on_apa_database, aes(log(z_score))) +
+  geom_histogram(boundary = 0, binwidth = 0.1) +
+  scale_x_continuous(breaks = log(c(0, 1.96, 2.58, 3.29, 3.89, 10, 20, 30, 40)),
+                     labels = c("p = 1", "p < .05", "p < .01", "p < .001", "p < .0001", "p ~ 10e-23", "p ~ 10e-88", "p ~ 10e-197", "p ~ 10e-351")) +
+  geom_vline(xintercept = log(1.960), linetype = "dotted") + # p < .05
+  geom_vline(xintercept = log(2.576), linetype = "dotted") + # p < .01
+  geom_vline(xintercept = log(3.291), linetype = "dotted") + # p < .001
+  geom_vline(xintercept = log(3.891), linetype = "dotted") + # p < .0001
+  theme_linedraw() +
+  ylab("Frequency") +
+  xlab("log(Z score)") +
+  coord_cartesian(xlim = c(-5, 5)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+## Percentiles 
+
+```{r}
+
+value_at_percentile <- function(empirical_distribution, percentile) {
+  # Use the quantile function to find the value at the given percentile
+  value <- quantile(empirical_distribution, probs = percentile / 100)
+  return(value)
+}
+
+z_to_p <- function(z_score) {
+  # Calculate the p-value for a two-tailed test using log.p to handle very small p-values
+  log_p_value <- pnorm(abs(z_score), lower.tail = FALSE, log.p = TRUE) + log(2)
+  
+  # Exponentiate the result to convert the log p-value to the actual p-value
+  p_value <- exp(log_p_value)
+  
+  return(p_value)
+}
+
+convert_to_scientific <- function(num) {
+  return(format(num, scientific = TRUE))
+}
+
+value_at_percentile(staltcheck_on_apa_database$z_score, 95)
+
+tibble(percentile = seq(90, 100, 1)) %>%
+  mutate(p = value_at_percentile(staltcheck_on_apa_database$z_score, percentile) |>
+           z_to_p() |>
+           convert_to_scientific())
+
+```
+
+
+## dd
+
+```{r}
+
+percentile_rank <- function(empirical_distribution, value) {
+  # Calculate the proportion of values in the empirical distribution
+  # that are less than or equal to the given value
+  percentile <- mean(empirical_distribution <= value) * 100
+  return(percentile)
+}
+
+percentile_rank(staltcheck_on_apa_database$z_score, 12.18249) # log(z) = 2.5
+
+```
+
+
+
+z = 1.96:  p < .05
+z = 2.576: p < .01 
+z = 3.291: p < .001 
+z = 3.891: p < .0001
+
+z = 5:     p ~ .000001 (5 zeros)
+z = 6:     p ~ .00000001 (7 zeros)
+z = 7:     p ~ .00000000001 (10 zeros)
+z = 8:     p ~ .00000000000001 (13 zeros) 
+
+z = 10:    p ~ 23 zeros
+z = 20:    p ~ 88 zeros
+z = 30:    p ~ 197 zeros
+z = 40:    p ~ 351 zeros
+
+
+log(z) = 2.5 == z = 12.18249 == p = 10e-34
+
+
+```{r}
+
+# computed_p = format(computed_p, scientific = TRUE),
+
+statcheck_on_apa_dataset |>
+  mutate(log_p_by_minus_1 = log(computed_p) * -1) |>
+  ggplot(aes(log_p_by_minus_1)) +
+  geom_histogram(boundary = 0, binwidth = 5) 
+
+
+statcheck_on_apa_dataset |>
+  ggplot(aes(computed_p)) +
+  geom_histogram(boundary = 0, binwidth = 0.001)
+
+# statcheck_on_apa_dataset |>
+#   mutate(log_p_by_minus_1_truncated = log(computed_p_truncated) * -1) |>
+#   ggplot(aes(log_p_by_minus_1_truncated)) +
+#   geom_histogram(boundary = 0, binwidth = 5) 
+
+
+res_summary <- statcheck_on_apa_dataset |>
+  mutate(log_p_by_minus_1 = log(computed_p) * -1) |>
+  count(log_p_by_minus_1) |>
+  mutate(percent = n / sum(n) * 100)
+
+```
+
+
+# cohens d
+
+```{r}
+
+res_cohensd <- statcheck_on_apa_dataset |>
+  filter(test_type == "t") |>
+  select(doi, t = test_value, df = df2) |>
+  mutate(df = as.numeric(df),
+         #abs_d_s = abs(t / sqrt(df + 1)),
+         abs_d_s = abs((2*t) / sqrt(df)),
+         abs_d_rm = abs(t / sqrt(df + 1))) |>
+  arrange(desc(abs_d_s))
+
+res_cohensd |>
+  filter(doi == "10.1037_a0026468-1649.39.1.61")
+
+```
