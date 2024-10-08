@@ -1,0 +1,5 @@
+*.DS_Store
+*.Rhistory
+old/*
+data/data_fulltexts.rds
+data/data_fulltexts_no_newlines
