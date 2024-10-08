@@ -3,3 +3,4 @@
 old/*
 data/data_fulltexts.rds
 data/data_fulltexts_no_newlines
+data/data_fulltexts_no_newlines.rds
