@@ -1,5 +1,5 @@
 ---
-title: "staltcheck"
+title: "STALTcheck: Using the StatCheck dataset to estimate the magnitude of STALT results"
 author: "Ian Hussey"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -31,52 +31,15 @@ library(janitor)
 library(statcheck)
 library(knitr)
 library(kableExtra)
-
-# min_decimals <- function(x, digits = 2) {
-#   sprintf(paste0("%.", digits, "f"), x)
-# }
+library(furrr)
 
 ```
 
-# Statcheck
+# STALTcheck functions
 
-```{r}
+Refactor 'statcheck simple edition' code to get STALT result out of it too.
 
-# # results to be statchecked
-# results_for_statcheck <- 
-#   tibble(label = c("t test comparing mean age between groups"),
-#          printed_result = c("t(58) = 1.46, p = 0.03"))
-# 
-# # apply statcheck
-# statcheck(results_for_statcheck, messages = FALSE) |>
-#   select(raw, computed_p, error, decision_error) |>
-#   # print table
-#   kable() |>
-#   kableExtra::kable_classic(full_width = FALSE)
-
-```
-
-
-# statcheck simple
-
-```{r}
-
-
-# dat <- read_csv("statchecksimple.csv")
-# 
-# ggplot(dat, aes(computed_p)) +
-#   geom_histogram()
-# 
-# ggplot(dat, aes(log(computed_p) * -1)) +
-#   geom_histogram() +
-#   xlab("Number of zeros in the p value\n(log(p) * -1))")
-
-
-```
-
-# refactors statcheck simple edition code
-
-```{r}
+```{r include=FALSE}
 
 library(dplyr)
 library(stringr)
@@ -178,97 +141,25 @@ process_stat_results <- function(input_text, statcheck_fix = TRUE, check_small_e
 
 ```
 
-## Test
+# Apply to the StatCheck APA dataset
+
+Verify you still get roughtly the same results as the original StatCheck paper.
 
 ```{r}
 
-# Example of how to use this function on a local text string:
-text_example <- "Here is some text with test_valueal tests t(123)=.45, p=0.65. Sometimes, the reported test_values are so inconsistent, they lead to decision errors F(12,34)=0.56, p=0.048."
+# set up parallel processing
+future::plan(multisession)
 
+# dat <- read_rds("../data/data_fulltexts.rds") |>
+#   mutate(text = str_remove_all(text, "\n"))
+#
+# write_rds(dat, "../data/data_fulltexts_no_newlines.rds", compress = "gz")
 
-text_example <- "exp 1
-iat
-t(98.12) = 6.63, p < .001
-sr
-t(98.32) = 8.33, p < .001
+dat <- read_rds("../data/data_fulltexts_no_newlines.rds")
 
-exp 2
-iat
-t(100.85) = -1.18, p = .24
-sr
-t(100.98) = -1.09, p = .28
-
-exp 3
-iat
-t(93.42) = 3.29, p = .001
-sr
-t(92.94) = 5.52, p < .001
-
-exp 4
-iat
-t(184.00) = 5.02, p < .001
-sr
-t(179.27) = 8.51, p < .001
-
-Exp 5
-Iat
-t(168.75) = 3.79, p < .001
-sr
-t(169.77) = 7.66, p < .001
-
-exp 6
-iat
-t(227.66) = 7.25, p < .001
-sr
-t(227.44) = 12.08, p < .001
-
-exp 7
-priming
-t(492) = 2.89, p = .004
-sr
-t(479.98) = 12.72, p < .001
-
-exp 8 
-iat
-F(2, 219) = 28.26, p < .0001
-sr
-F(2, 219) = 26.70, p < .0001
-"
-
-results <- process_stat_results(text_example)
-print(results)
-
-results |>
-  mutate(n_decimals = log(computed_p) * -1)
-
-results |>
-  mutate(n_decimals = log(computed_p) * -1) |>
-  ggplot(aes(n_decimals)) +
-  geom_histogram() +
-  xlab("Number of decimals in the p value\n(log(p) * -1))")
+possible_process_stat_results <- possibly(process_stat_results, otherwise = NA)
 
 ```
-
-## APA dataset
-
-```{r}
-
-# library(furrr)
-# 
-# # set up parallel processing
-# future::plan(multisession)
-# 
-# # dat <- read_rds("../data/data_fulltexts.rds") |>
-# #   mutate(text = str_remove_all(text, "\n"))
-# # 
-# # write_rds(dat, "../data/data_fulltexts_no_newlines.rds", compress = "gz")
-# 
-# dat <- read_rds("../data/data_fulltexts_no_newlines.rds")
-# 
-# possible_process_stat_results <- possibly(process_stat_results, otherwise = NA)
-
-```
-
 
 ```{r}
 
@@ -290,33 +181,26 @@ statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset.rds")
 
 ```
 
-## statcheck errors
-
 ```{r}
 
 statcheck_on_apa_dataset |>
   distinct(doi) |>
-  count()
+  count(name = "n_dois")
 
 statcheck_on_apa_dataset |>
   drop_na(decision_error) |>
   distinct(doi) |>
-  count()
+  count(name = "n_decision_error")
 
 statcheck_on_apa_dataset |>
   drop_na(decision_error) |>
   group_by(doi) |>
   summarize(decision_error = max(decision_error, na.rm = TRUE)) |>
   ungroup() |>
-  count(decision_error) |>
-  mutate(percent = janitor::round_half_up(n / sum(n)*100, 1))
-
-# temp <- statcheck_on_apa_dataset |>
-#   drop_na(decision_error) |>
-#   group_by(doi) |>
-#   summarize(n_tests = n(),
-#             decision_errors = sum(decision_error)) |>
-#   ungroup()
+  count(decision_error, name = "n_dois_with_decision_errors") |>
+  mutate(percent = janitor::round_half_up(n_dois_with_decision_errors / sum(n_dois_with_decision_errors)*100, 1)) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
 
 ```
 
@@ -324,14 +208,16 @@ statcheck_on_apa_dataset |>
 - n articles with statcheck-able results detected: 26769
 - n articles with 1+ statcheck decision errors: 3446, 12.9% (broadly replicates Nuijten et al.'s result)
 
-## staltcheck errors
+# STALTcheck errors
 
-is_lower <- function(value, threshold = 0.0000000000000001){
-  tolerance <- threshold * -1
-  (value - threshold) < -tolerance
-}
+## Z score
 
 ```{r fig.height=4, fig.width=10}
+
+# is_lower <- function(value, threshold = 0.0000000000000001){
+#   tolerance <- threshold * -1
+#   (value - threshold) < -tolerance
+# }
 
 staltcheck_on_apa_database <- statcheck_on_apa_dataset |> 
   filter(!is.na(computed_p)) |>
@@ -352,6 +238,7 @@ ggplot(staltcheck_on_apa_database, aes(z_score)) +
 
 ```
 
+## log(Z score)
 
 ```{r}
 
@@ -395,17 +282,20 @@ convert_to_scientific <- function(num) {
   return(format(num, scientific = TRUE))
 }
 
-value_at_percentile(staltcheck_on_apa_database$z_score, 95)
-
 tibble(percentile = seq(90, 100, 1)) %>%
   mutate(p = value_at_percentile(staltcheck_on_apa_database$z_score, percentile) |>
            z_to_p() |>
-           convert_to_scientific())
+           convert_to_scientific()) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
 
 ```
 
+95th percentile Z score: `r value_at_percentile(staltcheck_on_apa_database$z_score, 95)`
 
-## dd
+## Percentile rank
+
+Function to check what percentile a given Z score is in. Uses 12.18249 as an example (I can't remember where I got the number).
 
 ```{r}
 
@@ -420,26 +310,7 @@ percentile_rank(staltcheck_on_apa_database$z_score, 12.18249) # log(z) = 2.5
 
 ```
 
-
-
-z = 1.96:  p < .05
-z = 2.576: p < .01 
-z = 3.291: p < .001 
-z = 3.891: p < .0001
-
-z = 5:     p ~ .000001 (5 zeros)
-z = 6:     p ~ .00000001 (7 zeros)
-z = 7:     p ~ .00000000001 (10 zeros)
-z = 8:     p ~ .00000000000001 (13 zeros) 
-
-z = 10:    p ~ 23 zeros
-z = 20:    p ~ 88 zeros
-z = 30:    p ~ 197 zeros
-z = 40:    p ~ 351 zeros
-
-
-log(z) = 2.5 == z = 12.18249 == p = 10e-34
-
+# Scrap
 
 ```{r}
 
@@ -469,20 +340,4 @@ res_summary <- statcheck_on_apa_dataset |>
 ```
 
 
-# cohens d
 
-```{r}
-
-res_cohensd <- statcheck_on_apa_dataset |>
-  filter(test_type == "t") |>
-  select(doi, t = test_value, df = df2) |>
-  mutate(df = as.numeric(df),
-         #abs_d_s = abs(t / sqrt(df + 1)),
-         abs_d_s = abs((2*t) / sqrt(df)),
-         abs_d_rm = abs(t / sqrt(df + 1))) |>
-  arrange(desc(abs_d_s))
-
-res_cohensd |>
-  filter(doi == "10.1037_a0026468-1649.39.1.61")
-
-```
