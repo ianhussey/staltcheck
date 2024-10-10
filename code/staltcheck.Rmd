@@ -238,6 +238,24 @@ ggplot(staltcheck_on_apa_database, aes(z_score)) +
 
 ```
 
+```{r fig.height=8, fig.width=10}
+
+ggplot(staltcheck_on_apa_database, aes(z_score)) +
+  geom_histogram(boundary = 0, binwidth = 0.25) +
+  scale_x_continuous(breaks = c(0, 1.96, 2.58, 3.29, 3.89, 10, 20, 30, 40),
+                     labels = c("(p = 1) 0", "(p < .05) 1.96", "(p < .01) 2.58", "(p < .001) 3.29", "(p < .0001) 3.89", "(p ~ 10e-23) 10", "(p ~ 10e-88) 20", "(p ~ 10e-197) 30", "(p ~ 10e-351) 40")) +
+  geom_vline(xintercept = 1.960, linetype = "dotted") + # p < .05
+  geom_vline(xintercept = 2.576, linetype = "dotted") + # p < .01
+  geom_vline(xintercept = 3.291, linetype = "dotted") + # p < .001
+  geom_vline(xintercept = 3.891, linetype = "dotted") + # p < .0001
+  theme_linedraw() +
+  ylab("Frequency") +
+  xlab("Z score") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  facet_wrap(~ error, ncol = 1, scales = "free_y")
+
+```
+
 ## log(Z score)
 
 ```{r}
@@ -255,6 +273,21 @@ ggplot(staltcheck_on_apa_database, aes(log(z_score))) +
   xlab("log(Z score)") +
   coord_cartesian(xlim = c(-5, 5)) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggplot(staltcheck_on_apa_database, aes(log(z_score))) +
+  geom_histogram(boundary = 0, binwidth = 0.1) +
+  scale_x_continuous(breaks = log(c(0, 1.96, 2.58, 3.29, 3.89, 10, 20, 30, 40)),
+                     labels = c("p = 1", "p < .05", "p < .01", "p < .001", "p < .0001", "p ~ 10e-23", "p ~ 10e-88", "p ~ 10e-197", "p ~ 10e-351")) +
+  geom_vline(xintercept = log(1.960), linetype = "dotted") + # p < .05
+  geom_vline(xintercept = log(2.576), linetype = "dotted") + # p < .01
+  geom_vline(xintercept = log(3.291), linetype = "dotted") + # p < .001
+  geom_vline(xintercept = log(3.891), linetype = "dotted") + # p < .0001
+  theme_linedraw() +
+  ylab("Frequency") +
+  xlab("log(Z score)") +
+  coord_cartesian(xlim = c(-5, 5)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  facet_wrap(~ error, ncol = 1, scales = "free_y")
 
 ```
 
@@ -286,6 +319,26 @@ tibble(percentile = seq(90, 100, 1)) %>%
   mutate(p = value_at_percentile(staltcheck_on_apa_database$z_score, percentile) |>
            z_to_p() |>
            convert_to_scientific()) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
+
+tibble(percentile = seq(90, 100, 1)) %>%
+  mutate(p = value_at_percentile(staltcheck_on_apa_database |>
+                                   filter(error) |>
+                                   pull(z_score), percentile) |>
+           z_to_p() |>
+           convert_to_scientific()) |>
+  rename(percentile_errors = percentile) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
+
+tibble(percentile = seq(90, 100, 1)) %>%
+  mutate(p = value_at_percentile(staltcheck_on_apa_database |>
+                                   filter(!error) |>
+                                   pull(z_score), percentile) |>
+           z_to_p() |>
+           convert_to_scientific()) |>
+  rename(percentile_nonerrors = percentile) |>
   kable(align = "r") |>
   kable_classic(full_width = FALSE)
 
