@@ -94,6 +94,31 @@ preprocess_text <- function(text) {
       paste0(" f(", degrees_of_freedom[[1]], ",", degrees_of_freedom[[2]], ")=")
     })
   
+  # NEW ADDITION TO STEVE's CODE BY IAN: Replace commas with periods in numbers representing statistics
+  # # This avoids changing commas used as separators in degrees of freedom
+  
+  # text <- text %>%
+  # #   # 1. Replace commas with periods in numbers after '=', '<', or '>'
+  # # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—)
+  # # str_replace_all("([=<>]\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3") %>%
+  # # 
+  # # # 2. Replace commas with periods in p-values like 'p = 0,05' or 'p < −0,05'
+  # # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—) in case of negative p-values
+  # # str_replace_all("(p\\s*[=<>]\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3") %>%
+  # 
+  # # 3. Replace commas with periods in test statistics with '=' (e.g., 't(19) = −14,009' or 't(19) = –14,009')
+  # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—)
+  # str_replace_all("([tTfF]\\([^\\)]+\\)\\s*=\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3")
+  
+  text <- text |>
+  # Step 0: Standardize dash-like characters to hyphen-minus (-)
+    #    Replaces Unicode minus sign (−), en dash (–), and em dash (—) with hyphen-minus (-)
+    str_replace_all("[−–—]", "-") |>
+    
+    # Step 1: Match 't (df) = -2,77' and extract the number, replacing the comma with a period
+    #    This will match the context and extract the numerical part, changing '-2,77' to '-2.77'
+    str_replace_all("t\\s*\\(\\d+\\)\\s*=\\s*(-?\\d+),(\\d+)", "\\1.\\2")
+  
   return(text)
 }
 
@@ -163,21 +188,22 @@ possible_process_stat_results <- possibly(process_stat_results, otherwise = NA)
 
 ```{r}
 
-# start_time <- Sys.time()
-# 
-# statcheck_on_apa_dataset <- dat |>
-#   #slice(1:10000) |>
-#   mutate(results = future_map(text, possible_process_stat_results)) |>
-#   select(-text) |>
-#   unnest(results) |>
-#   full_join(dat |> select(doi), by = "doi")
-# 
-# end_time <- Sys.time()
-# time_taken <- round(end_time - start_time, 2)
-# time_taken
-# 
-# write_rds(statcheck_on_apa_dataset, "../data/statcheck_on_apa_dataset.rds")
-statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset.rds")
+start_time <- Sys.time()
+
+statcheck_on_apa_dataset <- dat |>
+  #filter(doi == "10.1037_a0013409") |>
+  #slice(1:10000) |>
+  mutate(results = future_map(text, possible_process_stat_results)) |>
+  select(-text) |>
+  unnest(results) |>
+  full_join(dat |> select(doi), by = "doi")
+
+end_time <- Sys.time()
+time_taken <- round(end_time - start_time, 2)
+time_taken
+
+write_rds(statcheck_on_apa_dataset, "../data/statcheck_on_apa_dataset_new.rds")
+#statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset_new.rds")
 
 ```
 
@@ -360,6 +386,103 @@ percentile_rank <- function(empirical_distribution, value) {
 }
 
 percentile_rank(staltcheck_on_apa_database$z_score, 12.18249) # log(z) = 2.5
+
+```
+
+# Effect size calculation
+
+```{r}
+
+library(effectsize)
+library(purrr)
+
+possibly_t_to_d <- possibly(t_to_d, otherwise = NA)
+
+dat_es_ttest <- statcheck_on_apa_dataset |>
+  filter(test_type == "t") |>
+  mutate(d = future_map2(test_value, as.numeric(df2), possibly_t_to_d)) |>
+  unnest(d) |>
+  rename(cohens_d = d, cohens_d_ci_lower = CI_low, cohens_d_ci_upper = CI_high) |>
+  select(-CI)
+
+write_rds(dat_es_ttest, "../data/dat_es_ttest.rds")
+#dat_es_ttest <- read_rds("../data/dat_es_ttest.rds")
+
+
+# possibly_z_to_d <- possibly(z_to_d, otherwise = NA)
+#
+# dat_es_ztest <- statcheck_on_apa_dataset |>
+#   filter(test_type == "Z") |>
+#   mutate(d = future_map2(test_value, as.numeric(df2), possibly_z_to_d)) |> # is df2 == n? second argument is n
+#   unnest(d) |>
+#   rename(cohens_d = d, cohens_d_ci_lower = CI_low, cohens_d_ci_upper = CI_high) |>
+#   select(-CI)
+# 
+# write_rds(dat_es_ztest, "../data/dat_es_Ztest.rds")
+# #dat_es_ztest <- read_rds("../data/dat_es_Ztest.rds")
+
+```
+
+## Distribution
+
+```{r}
+
+ggplot(dat_es_ttest, aes(cohens_d)) +
+  geom_histogram(binwidth = 0.1, boundary = 0) +
+  theme_linedraw()
+
+ggplot(dat_es_ttest, aes(abs(cohens_d))) +
+  geom_histogram(binwidth = 0.1, boundary = 0) +
+  theme_linedraw()
+
+
+
+ggplot(dat_es_ttest, aes(cohens_d)) +
+  geom_histogram(binwidth = 0.1, boundary = 0) +
+  theme_linedraw() +
+  coord_cartesian(xlim = c(-5, 5))
+
+ggplot(dat_es_ttest, aes(abs(cohens_d))) +
+  geom_histogram(binwidth = 0.1, boundary = 0) +
+  theme_linedraw() +
+  coord_cartesian(xlim = c(0, 5))
+
+
+dat_es_ttest |>
+  summarize(median_abs_d = median(abs(cohens_d), na.rm = TRUE))
+
+
+
+temp <- dat_es_ttest |>
+  filter(abs(cohens_d) > 5 & computed_p < 10e-10)
+
+
+ggplot(dat_es_ttest, aes(log(abs(cohens_d)), log(computed_p))) +
+  geom_point() +
+  theme_linedraw() 
+
+ggplot(dat_es_ttest, aes(abs(cohens_d), log(computed_p))) +
+  geom_point() +
+  theme_linedraw() +
+  coord_cartesian(xlim = c(0, 10))
+
+ggplot(dat_es_ttest, aes(log(abs(cohens_d)), log(computed_p)*-1)) +
+  geom_point(alpha = 0.2) +
+  theme_linedraw() 
+
+
+temp <- dat_es_ttest |>
+  filter(abs(cohens_d) < .5 & 
+           computed_p < 10e-20)
+  
+temp <- dat_es_ttest |>
+  filter(as.numeric(df2) < 30 & 
+           computed_p < 10e-20)
+
+
+temp <- dat_es_ttest |>
+  mutate(df2 = as.numeric(df2)) |>
+  filter(abs(cohens_d) < 5.1 & abs(cohens_d) > 4.9)
 
 ```
 
