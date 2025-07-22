@@ -1,0 +1,110 @@
+tjmahr's solution for underflow issues - consider integrating into my code. 
+
+https://bsky.app/profile/tjmahr.com/post/3lukyk2ey6c2z
+
+``` r
+library(tidyverse)
+```
+
+TLDR: probability functions like pt() can provide log values so that you
+can avoid numerical problems. (This is why we sum log likelihoods instead
+of multiplying loglikelihoods.) So, we
+can identify the FLOATING-POINT BREAKERS of p-values if we stick
+to the log scale throughout
+the pipeline.
+
+``` r
+# See https://mmmdata.io/posts/2025/07/stalt-check/
+statcheck_on_apa_dataset <- read_rds("./data/statcheck_on_apa_dataset.rds") 
+```
+
+Just looking at t statistics
+
+``` r
+alternative_log10_pvalues <- statcheck_on_apa_dataset |> 
+  filter(test_type == "t") |> 
+  # 121k rows
+  select(test_type, df2, test_value, computed_p) |> 
+  mutate(
+    df2 = as.numeric(df2),
+    p = 2 * pt(-abs(test_value), df2)
+  ) |> 
+  # Don't want to deal with different tailed-ness 
+  filter(p == computed_p) |> 
+  # 120k rows
+  mutate(
+    logp = log(2) + pt(-abs(test_value), df2, log.p = TRUE),
+    log10p = -(logp / log(10)),
+    direct_log10p = -log10(computed_p)
+  ) 
+
+alternative_log10_pvalues |> 
+  filter(is.finite(direct_log10p)) |> 
+  summarise(
+    easy_cases_are_the_same = all.equal(log10p, direct_log10p)
+  )
+#> # A tibble: 1 × 1
+#>   easy_cases_are_the_same
+#>   <lgl>                  
+#> 1 TRUE
+
+alternative_log10_pvalues |> 
+  arrange(desc(log10p)) |> 
+  print(n = 50)
+#> # A tibble: 120,438 × 8
+#>    test_type    df2 test_value computed_p         p   logp log10p direct_log10p
+#>    <chr>      <dbl>      <dbl>      <dbl>     <dbl>  <dbl>  <dbl>         <dbl>
+#>  1 t          30343      152.   0         0         -8610.  3739.          Inf 
+#>  2 t           9702      157.   0         0         -6146.  2669.          Inf 
+#>  3 t          47476      103.   0         0         -4759.  2067.          Inf 
+#>  4 t         118238       99.2  0         0         -4727.  2053.          Inf 
+#>  5 t           5390      109.   0         0         -3142.  1365.          Inf 
+#>  6 t           5390      103.   0         0         -2923.  1269.          Inf 
+#>  7 t           5390       81.5  0         0         -2168.   941.          Inf 
+#>  8 t           5390       81.2  0         0         -2156.   936.          Inf 
+#>  9 t           1050      172.   0         0         -1774.   770.          Inf 
+#> 10 t            999      147.   0         0         -1564.   679.          Inf 
+#> 11 t          14735      -58.7  0         0         -1553.   675.          Inf 
+#> 12 t            999      141.   0         0         -1521.   660.          Inf 
+#> 13 t           1663       92.6  0         0         -1515.   658.          Inf 
+#> 14 t           6211      -61.5  0         0         -1482.   644.          Inf 
+#> 15 t           5390       62.7  0         0         -1481.   643.          Inf 
+#> 16 t           1317      -98.5  0         0         -1403.   609.          Inf 
+#> 17 t            999      123.   0         0         -1393.   605.          Inf 
+#> 18 t           2948       67.0  0         0         -1369.   595.          Inf 
+#> 19 t           1786       78.0  0         0         -1328.   577.          Inf 
+#> 20 t            999      112.   0         0         -1305.   567.          Inf 
+#> 21 t           9959       53.6  0         0         -1267.   550.          Inf 
+#> 22 t           1012       98.4  0         0         -1197.   520.          Inf 
+#> 23 t           2079      -65.2  0         0         -1160.   504.          Inf 
+#> 24 t            720      119.   0         0         -1095.   476.          Inf 
+#> 25 t           7287       48.8  0         0         -1035.   450.          Inf 
+#> 26 t           4983      -50.0  0         0         -1017.   442.          Inf 
+#> 27 t          11004       45.9  0         0          -966.   420.          Inf 
+#> 28 t            645      110.   0         0          -964.   419.          Inf 
+#> 29 t           9708      -45.0  0         0          -925.   402.          Inf 
+#> 30 t            237     -678    0         0          -900.   391.          Inf 
+#> 31 t          10204      -43.8  0         0          -883.   383.          Inf 
+#> 32 t          11052       43.4  0         0          -873.   379.          Inf 
+#> 33 t           3443       47.2  0         0          -862.   374.          Inf 
+#> 34 t           1391       55.3  0         0          -812.   353.          Inf 
+#> 35 t            267      328.   0         0          -804.   349.          Inf 
+#> 36 t           1317      -53.2  0         0          -760.   330.          Inf 
+#> 37 t           1250       54.1  0         0          -757.   329.          Inf 
+#> 38 t            574       83.1  4.55e-322 4.55e-322  -740.   321.          321.
+#> 39 t           1050       56.3  2.02e-319 2.02e-319  -734.   319.          319.
+#> 40 t           1842       46.8  2.01e-315 2.01e-315  -725.   315.          315.
+#> 41 t            345      149.   5.17e-315 5.17e-315  -724.   314.          314.
+#> 42 t            588       77.4  1.38e-310 1.38e-310  -713.   310.          310.
+#> 43 t            256      256    1.69e-310 1.69e-310  -713.   310.          310.
+#> 44 t         118238       37.8  5.36e-310 5.36e-310  -712.   309.          309.
+#> 45 t          44710      -37.9  6.98e-310 6.98e-310  -712.   309.          309.
+#> 46 t           9238      -39.1  7.01e-310 7.01e-310  -712.   309.          309.
+#> 47 t            568       77.9  1.83e-305 1.83e-305  -702.   305.          305.
+#> 48 t           9535      -38.4  1.54e-300 1.54e-300  -690.   300.          300.
+#> 49 t            635      -68.6  6.58e-296 6.58e-296  -680.   295.          295.
+#> 50 t           1340       47.5  1.51e-289 1.51e-289  -665.   289.          289.
+#> # ℹ 120,388 more rows
+```
+
+<sup>Created on 2025-07-22 with [reprex v2.1.1](https://reprex.tidyverse.org)</sup>
