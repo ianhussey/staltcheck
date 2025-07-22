@@ -1,0 +1,211 @@
+---
+title: "STALTcheck: Using the StatCheck dataset to estimate the magnitude of STALT results"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+```{r}
+
+library(tidyverse)
+library(metafor)
+library(janitor)
+library(statcheck)
+library(knitr)
+library(kableExtra)
+library(furrr)
+
+```
+
+# STALTcheck functions
+
+Refactor 'statcheck simple edition' code to get STALT result out of it too.
+
+```{r include=FALSE}
+
+library(dplyr)
+library(stringr)
+library(statcheck)
+
+CLOSE_RANGE = 0.01 # proportion proximity of computed vs reported p-values to still be considered "close"
+
+# Function to preprocess text and make it more statcheck-friendly
+preprocess_text <- function(text) {
+  # The edge of paragraph can cause issues
+  text <- paste("", text, "")
+  
+  # Replace weird spaces
+  text <- text %>%
+    str_replace_all(fixed(" "), " ") %>%  # half spaces
+    str_replace_all("\\s", " ") # normalize spaces
+  
+  # Replace non-standard separators
+  text <- text %>%
+    str_replace_all(fixed(";"), fixed(",")) %>%
+    str_replace_all(fixed("["), fixed("(")) %>%
+    str_replace_all(fixed("]"), fixed(")"))
+  
+  # Replace squared symbol
+  text <- text %>% str_replace_all(fixed("\u00B2"), fixed("2"))
+  
+  # Statcheck has trouble with test_values or p-values that are exactly 0 or 1
+  text <- text %>%
+    str_replace_all("=\\s?0(?!(\\d|(\\.\\d)))", fixed("= 0.0")) %>%
+    str_replace_all("<\\s?0(?!(\\d|(\\.\\d)))", fixed("< 0.0")) %>%
+    str_replace_all(">\\s?0(?!(\\d|(\\.\\d)))", fixed("> 0.0")) %>%
+    str_replace_all("=\\s?1(?!(\\d|(\\.\\d)))", fixed("= 1.0")) %>%
+    str_replace_all("<\\s?1(?!(\\d|(\\.\\d)))", fixed("< 1.0")) %>%
+    str_replace_all(">\\s?1(?!(\\d|(\\.\\d)))", fixed("> 1.0"))
+  
+  # Recognize t-tests without parentheses
+  REGEX_NUMBER <- "[0-9]*\\.?[0-9]+" # positive number with optional decimal
+  REGEX_T <- paste0("[^A-Za-z](t|T)", REGEX_NUMBER, "\\s*=")
+  REGEX_F <- paste0("[^A-Za-z](f|F)", REGEX_NUMBER, ",", REGEX_NUMBER, "\\s*=")
+  
+  # Add parentheses to smooshed t-tests
+  text <- text %>%
+    str_replace_all(REGEX_T, function(s) {
+      degrees_of_freedom <- str_extract(s, REGEX_NUMBER)
+      paste0(" t(", degrees_of_freedom, ")=")
+    })
+  
+  # Add parentheses to smooshed f-tests
+  text <- text %>%
+    str_replace_all(REGEX_F, function(s) {
+      degrees_of_freedom <- str_extract_all(s, REGEX_NUMBER)[[1]]
+      paste0(" f(", degrees_of_freedom[[1]], ",", degrees_of_freedom[[2]], ")=")
+    })
+  
+  # NEW ADDITION TO STEVE's CODE BY IAN: Replace commas with periods in numbers representing statistics
+  # # This avoids changing commas used as separators in degrees of freedom
+  
+  # text <- text %>%
+  # #   # 1. Replace commas with periods in numbers after '=', '<', or '>'
+  # # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—)
+  # # str_replace_all("([=<>]\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3") %>%
+  # # 
+  # # # 2. Replace commas with periods in p-values like 'p = 0,05' or 'p < −0,05'
+  # # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—) in case of negative p-values
+  # # str_replace_all("(p\\s*[=<>]\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3") %>%
+  # 
+  # # 3. Replace commas with periods in test statistics with '=' (e.g., 't(19) = −14,009' or 't(19) = –14,009')
+  # #    Includes hyphen-minus (-), Unicode minus sign (−), en dash (–), and em dash (—)
+  # str_replace_all("([tTfF]\\([^\\)]+\\)\\s*=\\s*)([-−–—]?\\d+),(\\d+)", "\\1\\2.\\3")
+  
+  text <- text |>
+  # Step 0: Standardize dash-like characters to hyphen-minus (-)
+    #    Replaces Unicode minus sign (−), en dash (–), and em dash (—) with hyphen-minus (-)
+    str_replace_all("[−–—]", "-") |>
+    
+    # Step 1: Match 't (df) = -2,77' and extract the number, replacing the comma with a period
+    #    This will match the context and extract the numerical part, changing '-2,77' to '-2.77'
+    str_replace_all("t\\s*\\(\\d+\\)\\s*=\\s*(-?\\d+),(\\d+)", "\\1.\\2")
+  
+  return(text)
+}
+
+# Function to process text, apply statcheck, and return results
+process_stat_results <- function(input_text, statcheck_fix = TRUE, check_small_errors = TRUE, check_one_tailed = TRUE) {
+  # Optionally preprocess the input text
+  if (statcheck_fix) {
+    input_text <- preprocess_text(input_text)
+  }
+  
+  # Apply statcheck
+  result_table <- statcheck(input_text) 
+
+  if(is.data.frame(result_table)){
+    result_table <- result_table|>
+      mutate(reported_p = as.numeric(reported_p),
+             computed_p = as.numeric(computed_p))
+  }
+  
+  # Clean up columns if statcheck found any results
+  if (!is.null(result_table)) {
+    result_table <- result_table %>%
+      mutate(p_is_close = (abs(reported_p - computed_p) / (reported_p / 2 + computed_p / 2) < CLOSE_RANGE)) %>%
+      mutate(p_is_close = p_is_close | abs(reported_p - computed_p) < 0.0001) %>%
+      mutate(p_is_close = p_is_close & check_small_errors)
+    
+    # Clean up and format output
+    result_table <- result_table %>%
+      mutate(df1 = ifelse(is.na(df1), "-", df1),
+             df2 = ifelse(is.na(df2), "-", df2)) %>%
+      rowwise() %>%
+      mutate(df1 = format(df1, digits = 3, drop0trailing = TRUE),
+             df2 = format(df2, digits = 3, drop0trailing = TRUE),
+             reported_p_string = format(reported_p, digits = 2, nsmall = 3, drop0trailing = TRUE),
+             computed_p_string = format(computed_p, digits = 2, nsmall = 3, drop0trailing = TRUE)) %>%
+      ungroup()
+    
+    # # Return only relevant columns
+    # result_table <- result_table %>%
+    #   select(test_value, df1, df2, Value, reported_p, computed_p, p_is_close)
+  }
+  
+  return(result_table)
+}
+
+```
+
+# Apply to the StatCheck APA dataset
+
+Verify you still get roughtly the same results as the original StatCheck paper.
+
+```{r}
+
+# set up parallel processing
+future::plan(multisession)
+
+# data not shared on github 
+# dat <- read_rds("../data/data_fulltexts.rds") |>
+#   mutate(text = str_remove_all(text, "\n"))
+#
+# write_rds(dat, "../data/data_fulltexts_no_newlines.rds", compress = "gz")
+
+dat <- read_rds("../data/data_fulltexts_no_newlines.rds")
+
+possible_process_stat_results <- possibly(process_stat_results, otherwise = NA)
+
+```
+
+```{r}
+
+start_time <- Sys.time()
+
+statcheck_on_apa_dataset <- dat |>
+  #filter(doi == "10.1037_a0013409") |>
+  #slice(1:10000) |>
+  mutate(results = future_map(text, possible_process_stat_results)) |>
+  select(-text) |>
+  unnest(results) |>
+  full_join(dat |> select(doi), by = "doi")
+
+end_time <- Sys.time()
+time_taken <- round(end_time - start_time, 2)
+time_taken
+
+write_rds(statcheck_on_apa_dataset, "../data/statcheck_on_apa_dataset.rds")
+#statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset.rds")
+
+```
+
+

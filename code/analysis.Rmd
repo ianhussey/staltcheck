@@ -1,0 +1,185 @@
+---
+title: "STALTcheck: Using the StatCheck dataset to estimate the magnitude of STALT results"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+# Dependencies
+
+```{r}
+
+library(tidyverse)
+library(metafor)
+library(janitor)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+dir.create("plots")
+
+```
+
+# Data
+
+Note that the limits of double precision floating point numbers is approximately 10e-324, below which these values will underflow to exactly 0. This issue is endemic to all double precision floating point number representations.
+
+Weird things happen with the representation of extremely small numbers. Because we are interested in the output of statcheck-like recalculations of p values, we simply use its output rather than try to engage with and overcome this weirdness.
+
+```{r}
+
+statcheck_on_apa_dataset <- read_rds("../data/statcheck_on_apa_dataset.rds") 
+
+```
+
+# Descriptives
+
+```{r}
+
+statcheck_on_apa_dataset |>
+  distinct(doi) |>
+  count(name = "n_dois")
+
+statcheck_on_apa_dataset |>
+  count(is.na(computed_p))
+
+statcheck_on_apa_dataset |>
+  drop_na(decision_error) |>
+  distinct(doi) |>
+  count(name = "n_decision_error")
+
+statcheck_on_apa_dataset |>
+  drop_na(decision_error) |>
+  group_by(doi) |>
+  summarize(decision_error = max(decision_error, na.rm = TRUE)) |>
+  ungroup() |>
+  count(decision_error, name = "n_dois_with_decision_errors") |>
+  mutate(percent = janitor::round_half_up(n_dois_with_decision_errors / sum(n_dois_with_decision_errors)*100, 1)) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
+
+```
+
+- n articles: 74470
+- n articles with statcheck-able results detected: 26769
+- n articles with 1+ statcheck decision errors: 3446, 12.9% (broadly replicates Nuijten et al.'s result)
+
+# STALTcheck errors
+
+## p values in 10e-x bins
+
+```{r}
+
+# 1. filter out zeros, compute -log10 and 10‑decade bins
+df3 <- statcheck_on_apa_dataset %>%
+  filter(!is.na(computed_p), computed_p > 0) %>%
+  mutate(
+    neglog10 = -log10(computed_p),
+    bin10    = floor(neglog10 / 10) * 10
+  )
+
+# 2. figure the maximum bin (e.g. 350 if your smallest p is ~1e-350)
+max_bin <- max(df3$bin10)
+
+# 3. choose ticks every 10
+ticks    <- seq(0, max_bin, by = 10)
+
+# 4. build labels “[10^-(x+10),10^-x)”
+labels_pm <- paste0(
+  "plain(\"[\")*",
+  "10^{-", ticks, "}*",
+  "plain(\",\")*",
+  "10^{-", ticks + 10, "}*",
+  "plain(\"]\")"
+)
+
+# 5. plot
+ggplot(df3, aes(x = bin10)) +
+  geom_bar(color = "black", fill = "grey80") +
+  scale_x_continuous(
+    breaks       = ticks,
+    labels       = parse(text = labels_pm),
+    minor_breaks = NULL,
+    name         = "p value bins"
+  ) +
+  scale_y_log10(name = "Frequency") +
+  theme_linedraw() +
+  theme(
+    panel.grid.minor.x = element_blank(),
+    axis.text.x        = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+
+ggsave(filename  = "plots/distribution_of_p_values.png",
+       width     = 7,
+       height    = 4)
+
+```
+
+### Percentiles
+
+```{r}
+
+df2 <- statcheck_on_apa_dataset %>%
+  filter(!is.na(computed_p), computed_p > 0) %>%
+  mutate(p_10e_minus_X = floor(-log10(computed_p)))
+
+# max_decade <- max(df2$p_10e_minus_X)
+# label_breaks <- seq(0, max_decade, by = 20)
+# label_labels <- paste0(
+#   "10e-", label_breaks
+# )
+# ggplot(df2, aes(x = p_10e_minus_X)) +
+#   geom_bar(color = "black", fill = "grey80") +
+#   scale_x_continuous(
+#     breaks = label_breaks,
+#     labels = label_labels
+#   ) +
+#   xlab("p values") +
+#   ylab("Frequency") +
+#   theme_linedraw() +
+#   theme(
+#     axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+#   ) 
+
+percentiles <- df2 |>
+  count(p_10e_minus_X) |>
+  mutate(percent = n/sum(n)*100,
+         percentile = cumsum(percent)) 
+
+percentiles |>
+  mutate_if(is.numeric, round_half_up, digits = 1) |>
+  filter(p_10e_minus_X %in% c(9, 17, 32, 66, 105, 223)) |>
+  select(p_10e_minus_X, percentile) |>
+  kable(align = "r") |>
+  kable_classic(full_width = FALSE)
+
+# # run in console to copy-paste markdown into .md file
+# percentiles |>
+#   mutate_if(is.numeric, round_half_up, digits = 1) |>
+#   filter(p_10e_minus_X %in% c(9, 17, 32, 66, 105, 223)) |>
+#   select(p_10e_minus_X, percentile) |>
+#   kable(align = "r", format = "markdown") 
+
+```
+
+
+
+
